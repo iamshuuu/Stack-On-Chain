@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stack — 3D Tile Stacking Game</title>
+<meta name="description" content="A precision-based 3D tile stacking game. Stack tiles perfectly to build the tallest tower!">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+    width: 100vw;
+    height: 100vh;
+    background: #D0CBC7;
+  }
+
+  #game-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* ── UI Overlay ── */
+  #ui-overlay {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  .ui-panel {
+    pointer-events: auto;
+  }
+
+  /* Score */
+  #score-display {
+    position: absolute;
+    top: 32px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    color: #333;
+  }
+
+  #score-value {
+    font-size: 72px;
+    font-weight: 900;
+    line-height: 1;
+    text-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    transition: transform 0.12s ease;
+  }
+
+  #score-value.pop {
+    transform: scale(1.2);
+  }
+
+  #high-score {
+    font-size: 14px;
+    font-weight: 600;
+    color: rgba(50,50,50,0.5);
+    margin-top: 6px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+
+  /* Start prompt */
+  #start-prompt {
+    position: absolute;
+    bottom: 120px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    color: rgba(50,50,50,0.7);
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    animation: pulse 1.8s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.5; transform: translateX(-50%) scale(1); }
+    50% { opacity: 1; transform: translateX(-50%) scale(1.05); }
+  }
+
+  /* Game Over */
+  #game-over {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    background: rgba(208,203,199,0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  #game-over.visible {
+    display: flex;
+  }
+
+  #game-over h2 {
+    font-size: 48px;
+    font-weight: 900;
+    color: #333;
+    margin-bottom: 8px;
+  }
+
+  #final-score {
+    font-size: 22px;
+    color: rgba(50,50,50,0.7);
+    margin-bottom: 36px;
+    font-weight: 600;
+  }
+
+  #restart-btn {
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    border: none;
+    color: #fff;
+    font-family: 'Inter', sans-serif;
+    font-size: 16px;
+    font-weight: 700;
+    padding: 16px 48px;
+    border-radius: 50px;
+    cursor: pointer;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 8px 30px rgba(102, 126, 234, 0.4);
+  }
+
+  #restart-btn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 12px 40px rgba(102, 126, 234, 0.6);
+  }
+
+  #restart-btn:active {
+    transform: scale(0.97);
+  }
+
+  /* Perfect placement flash */
+  #perfect-flash {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 28px;
+    font-weight: 900;
+    color: #333;
+    text-shadow: 0 0 20px rgba(255,220,100,0.6), 0 0 40px rgba(255,220,100,0.3);
+    opacity: 0;
+    pointer-events: none;
+    letter-spacing: 6px;
+    text-transform: uppercase;
+    transition: none;
+  }
+
+  /* Combo counter */
+  #combo-display {
+    position: absolute;
+    top: 130px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 16px;
+    font-weight: 700;
+    color: rgba(180,120,40,0.9);
+    letter-spacing: 2px;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+
+  #combo-display.visible {
+    opacity: 1;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="game-canvas"></canvas>
+
+<div id="ui-overlay">
+  <div id="score-display" class="ui-panel">
+    <div id="score-value">0</div>
+    <div id="high-score">BEST: 0</div>
+  </div>
+  <div id="combo-display"></div>
+  <div id="perfect-flash">PERFECT</div>
+  <div id="start-prompt" class="ui-panel">TAP TO START</div>
+  <div id="game-over" class="ui-panel">
+    <h2>GAME OVER</h2>
+    <div id="final-score">Score: 0</div>
+    <button id="restart-btn">PLAY AGAIN</button>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.163.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ═══════════════════════════════════════════════════════
+// ██  CONSTANTS
+// ═══════════════════════════════════════════════════════
+
+const TILE_WIDTH = 10;        // matches reference repo
+const TILE_DEPTH = 10;
+const TILE_HEIGHT = 2;        // matches reference repo
+const PERFECT_THRESHOLD = 0.3;
+const BASE_SPEED = 8;        // dt-based speed, scaled for MOVE_AMOUNT=12
+const SPEED_INCREMENT = 0.3;
+const MAX_SPEED = 25;
+const MOVE_AMOUNT = 12;       // travel range from center
+const GRAVITY = 25;
+const CAMERA_Y_OFFSET = 1.32;  // ~25° elevation angle
+const CAMERA_LERP = 0.06;
+const SHAKE_DECAY = 0.88;
+const FALL_CLEANUP_Y = -80;   // far below — pieces fall a long time
+
+// ═══════════════════════════════════════════════════════
+// ██  COLOR PALETTE — soft pastel sine-wave (like ref)
+// ═══════════════════════════════════════════════════════
+
+const ColorPalette = {
+  offset: Math.round(Math.random() * 100),
+  getColor(layer) {
+    const i = layer + this.offset;
+    const r = (Math.sin(0.3 * i) * 55 + 200) / 255;
+    const g = (Math.sin(0.3 * i + 2) * 55 + 200) / 255;
+    const b = (Math.sin(0.3 * i + 4) * 55 + 200) / 255;
+    return new THREE.Color(r, g, b);
+  },
+  getEmissive(layer) {
+    const c = this.getColor(layer);
+    return new THREE.Color(c.r * 0.25, c.g * 0.25, c.b * 0.25);
+  }
+};
+
+// ═══════════════════════════════════════════════════════
+// ██  AUDIO SYSTEM (Web Audio API — no external files)
+// ═══════════════════════════════════════════════════════
+
+class AudioSystem {
+  constructor() {
+    this.ctx = null;
+    this.initialized = false;
+  }
+
+  init() {
+    if (this.initialized) return;
+    try {
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      this.initialized = true;
+    } catch (e) { /* audio not available */ }
+  }
+
+  _tone(freq, duration, type = 'sine', volume = 0.15, detune = 0) {
+    if (!this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    osc.detune.value = detune;
+    gain.gain.setValueAtTime(volume, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start();
+    osc.stop(this.ctx.currentTime + duration);
+  }
+
+  playStack(combo = 0) {
+    const baseFreq = 320 + combo * 40;
+    this._tone(baseFreq, 0.15, 'sine', 0.12);
+    this._tone(baseFreq * 1.5, 0.1, 'sine', 0.06);
+  }
+
+  playPerfect(combo = 0) {
+    const base = 440 + combo * 30;
+    this._tone(base, 0.3, 'sine', 0.15);
+    this._tone(base * 1.25, 0.25, 'sine', 0.1);
+    this._tone(base * 1.5, 0.2, 'sine', 0.08);
+    setTimeout(() => this._tone(base * 2, 0.2, 'sine', 0.06), 80);
+  }
+
+  playSlice() {
+    if (!this.ctx) return;
+    const bufferSize = this.ctx.sampleRate * 0.08;
+    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * 0.3;
+    const src = this.ctx.createBufferSource();
+    const gain = this.ctx.createGain();
+    src.buffer = buffer;
+    gain.gain.setValueAtTime(0.15, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.08);
+    src.connect(gain);
+    gain.connect(this.ctx.destination);
+    src.start();
+  }
+
+  playGameOver() {
+    this._tone(300, 0.4, 'sawtooth', 0.1);
+    setTimeout(() => this._tone(220, 0.5, 'sawtooth', 0.08), 150);
+    setTimeout(() => this._tone(160, 0.7, 'sawtooth', 0.06), 350);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// ██  GAME STATE
+// ═══════════════════════════════════════════════════════
+
+class GameState {
+  constructor() {
+    this.reset();
+    this.highScore = parseInt(localStorage.getItem('stack_high') || '0', 10);
+  }
+
+  reset() {
+    this.score = 0;
+    this.layer = 0;
+    this.phase = 'ready'; // ready | playing | over
+    this.combo = 0;
+  }
+
+  getSpeed() {
+    return Math.min(BASE_SPEED + this.layer * SPEED_INCREMENT, MAX_SPEED);
+  }
+
+  addScore(perfect) {
+    if (perfect) {
+      this.combo++;
+      this.score += 1 + this.combo;
+    } else {
+      this.combo = 0;
+      this.score += 1;
+    }
+    this.layer++;
+    if (this.score > this.highScore) {
+      this.highScore = this.score;
+      localStorage.setItem('stack_high', String(this.highScore));
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// ██  CAMERA CONTROLLER (Orthographic, isometric-style)
+// ═══════════════════════════════════════════════════════
+
+class CameraController {
+  constructor(camera) {
+    this.camera = camera;
+    this.targetY = CAMERA_Y_OFFSET;
+    this.shakeOffset = new THREE.Vector3();
+    this.shakeIntensity = 0;
+    // Isometric-style position like reference: (2,2,2) normalized
+    this.camera.position.set(2, 1.32, 2);
+    this.lookTarget = new THREE.Vector3(0, 0, 0);
+    this.currentLookY = 0;
+    this.camera.lookAt(0, 0, 0);
+  }
+
+  setTargetY(stackTopY) {
+    this.targetY = stackTopY + CAMERA_Y_OFFSET;
+    this.currentLookY = stackTopY;
+  }
+
+  shake(intensity = 0.15) {
+    this.shakeIntensity = intensity;
+  }
+
+  update() {
+    // Smooth Y follow
+    const desiredY = this.targetY;
+    this.camera.position.y += (desiredY - this.camera.position.y) * CAMERA_LERP;
+
+    // Camera shake
+    if (this.shakeIntensity > 0.001) {
+      this.shakeOffset.set(
+        (Math.random() - 0.5) * this.shakeIntensity,
+        (Math.random() - 0.5) * this.shakeIntensity * 0.5,
+        (Math.random() - 0.5) * this.shakeIntensity
+      );
+      this.shakeIntensity *= SHAKE_DECAY;
+    } else {
+      this.shakeOffset.set(0, 0, 0);
+    }
+
+    this.lookTarget.y += (this.currentLookY - this.lookTarget.y) * CAMERA_LERP;
+
+    this.camera.lookAt(
+      this.shakeOffset.x,
+      this.lookTarget.y + this.shakeOffset.y,
+      this.shakeOffset.z
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// ██  PHYSICS HANDLER — realistic directional falling
+// ═══════════════════════════════════════════════════════
+
+class PhysicsHandler {
+  constructor() {
+    this.fallingPieces = [];
+  }
+
+  /**
+   * Add a sliced piece with directional physics.
+   * @param {THREE.Mesh} mesh
+   * @param {string} axis - 'x' or 'z' — the axis of slicing
+   * @param {number} direction - positive or negative, which side it was sliced off
+   */
+  addPiece(mesh, axis = null, direction = 0) {
+    // Directional velocity: piece flies off in the direction it was sliced
+    const vel = new THREE.Vector3(0, 0, 0);
+    if (axis && direction !== 0) {
+      const speed = 2 + Math.random() * 3; // 2-5 units/s lateral
+      vel[axis] = direction > 0 ? speed : -speed;
+    } else {
+      // Full miss — random mild lateral
+      vel.x = (Math.random() - 0.5) * 2;
+      vel.z = (Math.random() - 0.5) * 2;
+    }
+
+    // Random heavy rotation like reference (rotateRandomness = 10)
+    const rotateRandom = 10;
+    const angularVel = new THREE.Vector3(
+      axis === 'z' ? (Math.random() * rotateRandom - rotateRandom / 2) : 0.1,
+      Math.random() * 0.5,
+      axis === 'x' ? (Math.random() * rotateRandom - rotateRandom / 2) : 0.1
+    );
+
+    this.fallingPieces.push({ mesh, velocity: vel, angularVel });
+  }
+
+  update(dt) {
+    for (let i = this.fallingPieces.length - 1; i >= 0; i--) {
+      const p = this.fallingPieces[i];
+      p.velocity.y -= GRAVITY * dt;
+      p.mesh.position.x += p.velocity.x * dt;
+      p.mesh.position.y += p.velocity.y * dt;
+      p.mesh.position.z += p.velocity.z * dt;
+      p.mesh.rotation.x += p.angularVel.x * dt;
+      p.mesh.rotation.y += p.angularVel.y * dt;
+      p.mesh.rotation.z += p.angularVel.z * dt;
+
+      // Only remove when far below camera — let it fall naturally for a long time
+      if (p.mesh.position.y < FALL_CLEANUP_Y) {
+        p.mesh.geometry.dispose();
+        p.mesh.material.dispose();
+        p.mesh.parent?.remove(p.mesh);
+        this.fallingPieces.splice(i, 1);
+      }
+    }
+  }
+
+  clear(scene) {
+    for (const p of this.fallingPieces) {
+      p.mesh.geometry.dispose();
+      p.mesh.material.dispose();
+      scene.remove(p.mesh);
+    }
+    this.fallingPieces = [];
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// ██  TILE SYSTEM
+// ═══════════════════════════════════════════════════════
+
+class TileSystem {
+  constructor(scene, physics) {
+    this.scene = scene;
+    this.physics = physics;
+    this.stack = [];
+    this.activeTile = null;
+    this.direction = 1;
+    this.movingAxis = 'x';
+  }
+
+  createTileMesh(width, depth, y, color, emissive) {
+    const geo = new THREE.BoxGeometry(width, TILE_HEIGHT, depth);
+    // Shift geometry so origin is at corner (like reference)
+    geo.applyMatrix4(new THREE.Matrix4().makeTranslation(width / 2, TILE_HEIGHT / 2, depth / 2));
+    const mat = new THREE.MeshStandardMaterial({
+      color,
+      emissive,
+      emissiveIntensity: 0.15,
+      roughness: 0.6,
+      metalness: 0.1,
+      flatShading: true,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.position.y = y;
+    this.scene.add(mesh);
+    return mesh;
+  }
+
+  placeBase() {
+    const color = ColorPalette.getColor(0);
+    const emissive = ColorPalette.getEmissive(0);
+    const mesh = this.createTileMesh(TILE_WIDTH, TILE_DEPTH, 0, color, emissive);
+    mesh.position.x = 0;
+    mesh.position.z = 0;
+    this.stack.push({
+      mesh,
+      width: TILE_WIDTH,
+      depth: TILE_DEPTH,
+      x: 0,
+      z: 0
+    });
+  }
+
+  spawnMovingTile(layer) {
+    const prev = this.stack[this.stack.length - 1];
+    const w = prev.width;
+    const d = prev.depth;
+    const y = (layer + 1) * TILE_HEIGHT;
+    const color = ColorPalette.getColor(layer + 1);
+    const emissive = ColorPalette.getEmissive(layer + 1);
+    const mesh = this.createTileMesh(w, d, y, color, emissive);
+
+    // Alternate axis each layer
+    this.movingAxis = layer % 2 === 0 ? 'x' : 'z';
+
+    // Start at a random side
+    const startSide = Math.random() > 0.5 ? MOVE_AMOUNT : -MOVE_AMOUNT;
+
+    if (this.movingAxis === 'x') {
+      mesh.position.x = startSide;
+      mesh.position.z = prev.z;
+    } else {
+      mesh.position.z = startSide;
+      mesh.position.x = prev.x;
+    }
+
+    this.direction = startSide > 0 ? -1 : 1;
+    this.activeTile = { mesh, width: w, depth: d };
+  }
+
+  updateMoving(dt, speed) {
+    if (!this.activeTile) return;
+    const m = this.activeTile.mesh;
+    const axis = this.movingAxis;
+
+    m.position[axis] += this.direction * speed * dt;
+
+    // Bounce at edges
+    if (m.position[axis] > MOVE_AMOUNT) {
+      m.position[axis] = MOVE_AMOUNT;
+      this.direction = -1;
+    } else if (m.position[axis] < -MOVE_AMOUNT) {
+      m.position[axis] = -MOVE_AMOUNT;
+      this.direction = 1;
+    }
+  }
+
+  /**
+   * Drops the active tile. Returns: 'perfect' | 'stacked' | 'miss'
+   */
+  drop() {
+    if (!this.activeTile) return 'miss';
+
+    const prev = this.stack[this.stack.length - 1];
+    const curr = this.activeTile;
+    const axis = this.movingAxis;
+    const sizeKey = axis === 'x' ? 'width' : 'depth';
+
+    const currPos = curr.mesh.position[axis];
+    const prevPos = prev[axis];
+    const prevSize = prev[sizeKey];
+    const currSize = curr[sizeKey];
+
+    const overlap = prevSize - Math.abs(currPos - prevPos);
+
+    // ── No overlap → miss ──
+    if (overlap <= 0) {
+      // Full miss — add to physics with no slice direction
+      this.physics.addPiece(curr.mesh, null, 0);
+      this.activeTile = null;
+      return 'miss';
+    }
+
+    // ── Perfect placement ──
+    if (currSize - overlap < PERFECT_THRESHOLD) {
+      // Snap perfectly
+      curr.mesh.position[axis] = prevPos;
+      // Restore full size from parent
+      this.scene.remove(curr.mesh);
+      curr.mesh.geometry.dispose();
+
+      const y = curr.mesh.position.y;
+      const color = curr.mesh.material.color.clone();
+      const emissive = curr.mesh.material.emissive.clone();
+      curr.mesh.material.dispose();
+
+      const keptMesh = this.createTileMesh(prev.width, prev.depth, y, color, emissive);
+      keptMesh.position.x = prev.x;
+      keptMesh.position.z = prev.z;
+
+      this.stack.push({
+        mesh: keptMesh,
+        width: prev.width,
+        depth: prev.depth,
+        x: prev.x,
+        z: prev.z
+      });
+      this.activeTile = null;
+      return 'perfect';
+    }
+
+    // ── Partial overlap → slice ──
+    const delta = currPos - prevPos;
+
+    // Compute overlap region
+    const overlapStart = Math.max(prevPos, currPos);
+    const overlapEnd = Math.min(prevPos + prevSize, currPos + currSize);
+    const keptSize = overlapEnd - overlapStart;
+    const keptPos = overlapStart; // corner-based position
+
+    // Sliced off piece
+    const slicedSize = currSize - keptSize;
+    let slicedPos;
+    if (delta < 0) {
+      // Tile is shifted left/back → chopped part is on the left/back side
+      slicedPos = currPos;
+    } else {
+      // Tile is shifted right/forward → chopped part is on the right/forward side
+      slicedPos = overlapEnd;
+    }
+
+    // Remove old mesh
+    const y = curr.mesh.position.y;
+    const otherAxis = axis === 'x' ? 'z' : 'x';
+    const otherPos = curr.mesh.position[otherAxis];
+    const color = curr.mesh.material.color.clone();
+    const emissive = curr.mesh.material.emissive.clone();
+    this.scene.remove(curr.mesh);
+    curr.mesh.geometry.dispose();
+    curr.mesh.material.dispose();
+
+    // Create kept piece (corner-origin geometry)
+    const keptW = axis === 'x' ? keptSize : curr.width;
+    const keptD = axis === 'z' ? keptSize : curr.depth;
+    const keptMesh = this.createTileMesh(keptW, keptD, y, color, emissive);
+    keptMesh.position[axis] = keptPos;
+    keptMesh.position[otherAxis] = otherPos;
+
+    this.stack.push({
+      mesh: keptMesh,
+      width: keptW,
+      depth: keptD,
+      x: keptMesh.position.x,
+      z: keptMesh.position.z
+    });
+
+    // Create falling sliced piece (corner-origin geometry)
+    const slicedW = axis === 'x' ? slicedSize : curr.width;
+    const slicedD = axis === 'z' ? slicedSize : curr.depth;
+    const slicedMesh = this.createTileMesh(slicedW, slicedD, y, color, emissive);
+    slicedMesh.position[axis] = slicedPos;
+    slicedMesh.position[otherAxis] = otherPos;
+
+    // Add to physics with directional info
+    this.physics.addPiece(slicedMesh, axis, delta);
+
+    this.activeTile = null;
+    return 'stacked';
+  }
+
+  clear() {
+    for (const tile of this.stack) {
+      tile.mesh.geometry.dispose();
+      tile.mesh.material.dispose();
+      this.scene.remove(tile.mesh);
+    }
+    this.stack = [];
+    if (this.activeTile) {
+      this.activeTile.mesh.geometry.dispose();
+      this.activeTile.mesh.material.dispose();
+      this.scene.remove(this.activeTile.mesh);
+      this.activeTile = null;
+    }
+  }
+
+  getStackTopY() {
+    return this.stack.length * TILE_HEIGHT;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// ██  UI CONTROLLER
+// ═══════════════════════════════════════════════════════
+
+class UIController {
+  constructor() {
+    this.scoreEl = document.getElementById('score-value');
+    this.highScoreEl = document.getElementById('high-score');
+    this.startPrompt = document.getElementById('start-prompt');
+    this.gameOverEl = document.getElementById('game-over');
+    this.finalScoreEl = document.getElementById('final-score');
+    this.restartBtn = document.getElementById('restart-btn');
+    this.perfectFlash = document.getElementById('perfect-flash');
+    this.comboDisplay = document.getElementById('combo-display');
+    this._perfectTimeout = null;
+  }
+
+  updateScore(score, highScore) {
+    this.scoreEl.textContent = score;
+    this.highScoreEl.textContent = `BEST: ${highScore}`;
+    this.scoreEl.classList.add('pop');
+    setTimeout(() => this.scoreEl.classList.remove('pop'), 130);
+  }
+
+  showCombo(combo) {
+    if (combo >= 2) {
+      this.comboDisplay.textContent = `🔥 ${combo}x COMBO`;
+      this.comboDisplay.classList.add('visible');
+    } else {
+      this.comboDisplay.classList.remove('visible');
+    }
+  }
+
+  hideStart() {
+    this.startPrompt.style.display = 'none';
+  }
+
+  showGameOver(score) {
+    this.finalScoreEl.textContent = `Score: ${score}`;
+    this.gameOverEl.classList.add('visible');
+  }
+
+  hideGameOver() {
+    this.gameOverEl.classList.remove('visible');
+  }
+
+  flashPerfect() {
+    if (this._perfectTimeout) clearTimeout(this._perfectTimeout);
+    this.perfectFlash.style.transition = 'none';
+    this.perfectFlash.style.opacity = '1';
+    this.perfectFlash.style.transform = 'translate(-50%, -50%) scale(1)';
+    void this.perfectFlash.offsetWidth;
+    this.perfectFlash.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
+    this.perfectFlash.style.opacity = '0';
+    this.perfectFlash.style.transform = 'translate(-50%, -50%) scale(1.3)';
+    this._perfectTimeout = setTimeout(() => {}, 700);
+  }
+
+  reset() {
+    this.scoreEl.textContent = '0';
+    this.startPrompt.style.display = 'block';
+    this.hideGameOver();
+    this.comboDisplay.classList.remove('visible');
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// ██  MAIN GAME
+// ═══════════════════════════════════════════════════════
+
+class Game {
+  constructor() {
+    this.canvas = document.getElementById('game-canvas');
+    this.state = new GameState();
+    this.audio = new AudioSystem();
+    this.ui = new UIController();
+
+    // ── Renderer ──
+    this.renderer = new THREE.WebGLRenderer({
+      canvas: this.canvas,
+      antialias: true,
+      alpha: false
+    });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setClearColor(0xD0CBC7, 1);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    // ── Scene ──
+    this.scene = new THREE.Scene();
+
+    // ── Camera (Orthographic like reference) ──
+    const viewSize = 30;
+    this.camera = new THREE.OrthographicCamera(
+      window.innerWidth / -viewSize,
+      window.innerWidth / viewSize,
+      window.innerHeight / viewSize,
+      window.innerHeight / -viewSize,
+      -100, 1000
+    );
+    this.cameraCtrl = new CameraController(this.camera);
+
+    // ── Lighting ──
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+    dirLight.position.set(0, 499, 0);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.width = 1024;
+    dirLight.shadow.mapSize.height = 1024;
+    this.dirLight = dirLight;
+    this.scene.add(dirLight);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+    this.scene.add(ambientLight);
+
+    // ── Systems ──
+    this.physics = new PhysicsHandler();
+    this.tiles = new TileSystem(this.scene, this.physics);
+
+    // ── Initial setup ──
+    this.tiles.placeBase();
+    this.ui.updateScore(0, this.state.highScore);
+
+    // ── Input ──
+    this._bindInput();
+
+    // ── Clock ──
+    this.clock = new THREE.Clock();
+
+    // ── Resize ──
+    window.addEventListener('resize', () => this._onResize());
+
+    // ── Start loop ──
+    this._loop();
+  }
+
+  _bindInput() {
+    const handleInput = (e) => {
+      if (e.target && e.target.id === 'restart-btn') return;
+      e.preventDefault();
+      this._onInput();
+    };
+
+    this.canvas.addEventListener('pointerdown', handleInput);
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault();
+        this._onInput();
+      }
+    });
+
+    this.ui.restartBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._restart();
+    });
+  }
+
+  _onInput() {
+    this.audio.init();
+
+    if (this.state.phase === 'ready') {
+      this.state.phase = 'playing';
+      this.ui.hideStart();
+      this.tiles.spawnMovingTile(this.state.layer);
+      return;
+    }
+
+    if (this.state.phase === 'playing') {
+      this._dropTile();
+      return;
+    }
+  }
+
+  _dropTile() {
+    const result = this.tiles.drop();
+
+    if (result === 'miss') {
+      this.state.phase = 'over';
+      this.audio.playGameOver();
+      this.cameraCtrl.shake(0.3);
+      setTimeout(() => {
+        this.ui.showGameOver(this.state.score);
+      }, 800);
+      return;
+    }
+
+    const perfect = result === 'perfect';
+    this.state.addScore(perfect);
+
+    if (perfect) {
+      this.audio.playPerfect(this.state.combo);
+      this.ui.flashPerfect();
+      this.cameraCtrl.shake(0.08);
+
+      const topTile = this.tiles.stack[this.tiles.stack.length - 1];
+      const origEmissiveIntensity = topTile.mesh.material.emissiveIntensity;
+      topTile.mesh.material.emissiveIntensity = 1.0;
+      setTimeout(() => {
+        topTile.mesh.material.emissiveIntensity = origEmissiveIntensity;
+      }, 300);
+    } else {
+      this.audio.playStack(this.state.combo);
+      this.audio.playSlice();
+      this.cameraCtrl.shake(0.12);
+    }
+
+    this.ui.updateScore(this.state.score, this.state.highScore);
+    this.ui.showCombo(this.state.combo);
+
+    // Update camera target
+    this.cameraCtrl.setTargetY(this.tiles.getStackTopY());
+
+    // Spawn next tile
+    this.tiles.spawnMovingTile(this.state.layer);
+  }
+
+  _restart() {
+    this.tiles.clear();
+    this.physics.clear(this.scene);
+    this.state.reset();
+    this.tiles.placeBase();
+    this.cameraCtrl.setTargetY(0);
+    this.cameraCtrl.camera.position.set(2, CAMERA_Y_OFFSET, 2);
+    this.cameraCtrl.lookTarget.y = 0;
+    this.ui.reset();
+    this.ui.updateScore(0, this.state.highScore);
+    ColorPalette.offset = Math.round(Math.random() * 100);
+  }
+
+  _onResize() {
+    const viewSize = 30;
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.camera.left = window.innerWidth / -viewSize;
+    this.camera.right = window.innerWidth / viewSize;
+    this.camera.top = window.innerHeight / viewSize;
+    this.camera.bottom = window.innerHeight / -viewSize;
+    this.camera.updateProjectionMatrix();
+  }
+
+  _loop() {
+    requestAnimationFrame(() => this._loop());
+
+    const dt = Math.min(this.clock.getDelta(), 0.05);
+
+    // Update moving tile
+    if (this.state.phase === 'playing' && this.tiles.activeTile) {
+      this.tiles.updateMoving(dt, this.state.getSpeed());
+    }
+
+    // Update physics
+    this.physics.update(dt);
+
+    // Update camera
+    this.cameraCtrl.update();
+
+    // Render
+    this.renderer.render(this.scene, this.camera);
+  }
+}
+
+// ── Boot ──
+new Game();
+</script>
+</body>
+</html>
