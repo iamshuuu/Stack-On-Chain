@@ -23,7 +23,7 @@
       overflow: hidden;
       width: 100vw;
       height: 100vh;
-      background: #a8d8ea;
+      background: #D0CBC7;
     }
 
     #game-canvas {
@@ -54,15 +54,14 @@
       left: 50%;
       transform: translateX(-50%);
       text-align: center;
-      color: #fff;
-      text-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+      color: #333;
     }
 
     #score-value {
       font-size: 72px;
       font-weight: 900;
       line-height: 1;
-      text-shadow: 0 2px 16px rgba(0, 0, 0, 0.3);
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
       transition: transform 0.12s ease;
     }
 
@@ -73,7 +72,7 @@
     #high-score {
       font-size: 14px;
       font-weight: 600;
-      color: rgba(255, 255, 255, 0.6);
+      color: rgba(50, 50, 50, 0.5);
       margin-top: 6px;
       letter-spacing: 1.5px;
       text-transform: uppercase;
@@ -86,7 +85,7 @@
       left: 50%;
       transform: translateX(-50%);
       text-align: center;
-      color: rgba(255, 255, 255, 0.85);
+      color: rgba(50, 50, 50, 0.7);
       font-size: 18px;
       font-weight: 600;
       letter-spacing: 2px;
@@ -118,7 +117,7 @@
       align-items: center;
       justify-content: center;
       flex-direction: column;
-      background: rgba(100, 130, 180, 0.65);
+      background: rgba(208, 203, 199, 0.85);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
     }
@@ -130,14 +129,13 @@
     #game-over h2 {
       font-size: 48px;
       font-weight: 900;
-      color: #fff;
-      text-shadow: 0 2px 16px rgba(0, 0, 0, 0.3);
+      color: #333;
       margin-bottom: 8px;
     }
 
     #final-score {
       font-size: 22px;
-      color: rgba(255, 255, 255, 0.8);
+      color: rgba(50, 50, 50, 0.7);
       margin-bottom: 36px;
       font-weight: 600;
     }
@@ -175,8 +173,8 @@
       transform: translate(-50%, -50%);
       font-size: 28px;
       font-weight: 900;
-      color: #fff;
-      text-shadow: 0 0 20px rgba(255, 220, 100, 0.8), 0 0 40px rgba(255, 220, 100, 0.5), 0 2px 12px rgba(0,0,0,0.3);
+      color: #333;
+      text-shadow: 0 0 20px rgba(255, 220, 100, 0.6), 0 0 40px rgba(255, 220, 100, 0.3);
       opacity: 0;
       pointer-events: none;
       letter-spacing: 6px;
@@ -192,8 +190,7 @@
       transform: translateX(-50%);
       font-size: 16px;
       font-weight: 700;
-      color: rgba(255, 220, 130, 0.95);
-      text-shadow: 0 1px 8px rgba(0, 0, 0, 0.3);
+      color: rgba(180, 120, 40, 0.9);
       letter-spacing: 2px;
       opacity: 0;
       transition: opacity 0.3s ease;
@@ -258,41 +255,44 @@
     // ═══════════════════════════════════════════════════════
 
     const ColorPalette = {
-      offset: Math.round(Math.random() * 100),
+      offset: Math.random() * 100, 
+      baseColors: [
+        new THREE.Color('#5fd6d1'), // Soothing Teal
+        new THREE.Color('#ffb3c6'), // Soothing Pink
+        new THREE.Color('#ffb38a'), // Soothing Orange
+        new THREE.Color('#ffe082')  // Soothing Yellow
+      ],
       getColor(layer) {
-        // HSL progression: teal (180°) → blue → purple → coral-pink (340°)
-        const hue = (180 + layer * 18) % 360;
-        const saturation = 0.70;
-        const lightness = 0.58;
-        return new THREE.Color().setHSL(hue / 360, saturation, lightness);
+        // Continuous, silk-smooth progression through the colors 
+        // 0.18 means it organically blends to a new theme color every ~5-6 layers
+        const i = (layer * 0.18) + this.offset;
+        const numColors = this.baseColors.length;
+        const colorIndex = i % numColors;
+        const index1 = Math.floor(colorIndex);
+        const index2 = (index1 + 1) % numColors;
+        const fraction = colorIndex - index1;
+        
+        // Smoothstep function makes the gradient feel polished and holds the primary theme colors slightly longer
+        const smoothFraction = fraction * fraction * (3 - 2 * fraction);
+        
+        const c = new THREE.Color().copy(this.baseColors[index1]).lerp(this.baseColors[index2], smoothFraction);
+        
+        // Subtle textural randomness per layer so they don't look artificial or repetitively flat
+        const rJitter = (Math.sin(layer * 12.3) * 0.03);
+        const gJitter = (Math.sin(layer * 45.6) * 0.03);
+        const bJitter = (Math.sin(layer * 78.9) * 0.03);
+        
+        c.r = Math.max(0, Math.min(1.0, c.r + rJitter));
+        c.g = Math.max(0, Math.min(1.0, c.g + gJitter));
+        c.b = Math.max(0, Math.min(1.0, c.b + bJitter));
+        
+        return c;
       },
       getEmissive(layer) {
         const c = this.getColor(layer);
-        return new THREE.Color(c.r * 0.20, c.g * 0.20, c.b * 0.20);
+        return new THREE.Color(c.r * 0.3, c.g * 0.3, c.b * 0.3);
       }
     };
-
-    // ═══════════════════════════════════════════════════════
-    // ██  GRADIENT SKY BACKGROUND
-    // ═══════════════════════════════════════════════════════
-
-    function createSkyGradientTexture() {
-      const canvas = document.createElement('canvas');
-      canvas.width = 2;
-      canvas.height = 512;
-      const ctx = canvas.getContext('2d');
-      const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-      gradient.addColorStop(0.0, '#f8a4c8');   // top — warm pink
-      gradient.addColorStop(0.35, '#d4b4e8');  // upper-mid — lavender
-      gradient.addColorStop(0.65, '#b8cff0');  // lower-mid — light blue
-      gradient.addColorStop(1.0, '#a8d8ea');   // bottom — soft sky blue
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      const texture = new THREE.CanvasTexture(canvas);
-      texture.magFilter = THREE.LinearFilter;
-      texture.minFilter = THREE.LinearFilter;
-      return texture;
-    }
 
     // ═══════════════════════════════════════════════════════
     // ██  AUDIO SYSTEM (Web Audio API — no external files)
@@ -411,6 +411,7 @@
         this.targetY = CAMERA_Y_OFFSET;
         this.shakeOffset = new THREE.Vector3();
         this.shakeIntensity = 0;
+        // Isometric-style position like reference: (2,2,2) normalized
         this.camera.position.set(2, 1.32, 2);
         this.lookTarget = new THREE.Vector3(0, 0, 0);
         this.currentLookY = 0;
@@ -426,11 +427,7 @@
         this.shakeIntensity = intensity;
       }
 
-
-
       update() {
-
-
         // Smooth Y follow
         const desiredY = this.targetY;
         this.camera.position.y += (desiredY - this.camera.position.y) * CAMERA_LERP;
@@ -547,10 +544,10 @@
         const mat = new THREE.MeshStandardMaterial({
           color,
           emissive,
-          emissiveIntensity: 0.20,
-          roughness: 0.35,
-          metalness: 0.15,
-          flatShading: false,
+          emissiveIntensity: 0.15,
+          roughness: 0.6,
+          metalness: 0.1,
+          flatShading: true,
         });
         const mesh = new THREE.Mesh(geo, mat);
         mesh.castShadow = true;
@@ -837,13 +834,12 @@
         });
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.setClearColor(0xa8d8ea, 1);
+        this.renderer.setClearColor(0xD0CBC7, 1);
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
         // ── Scene ──
         this.scene = new THREE.Scene();
-        this.scene.background = createSkyGradientTexture();
 
         // ── Camera (Orthographic like reference) ──
         const viewSize = 30;
@@ -857,35 +853,16 @@
         this.cameraCtrl = new CameraController(this.camera);
 
         // ── Lighting ──
-        const hemiLight = new THREE.HemisphereLight(0xb8cff0, 0xf8a4c8, 0.6);
-        this.scene.add(hemiLight);
-
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.35);
-        dirLight.position.set(2, 499, 2);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        dirLight.position.set(0, 499, 0);
         dirLight.castShadow = true;
         dirLight.shadow.mapSize.width = 1024;
         dirLight.shadow.mapSize.height = 1024;
-        dirLight.shadow.camera.near = 0;
-        dirLight.shadow.camera.far = 600;
-        dirLight.shadow.camera.left = -20;
-        dirLight.shadow.camera.right = 20;
-        dirLight.shadow.camera.top = 520;
-        dirLight.shadow.camera.bottom = -20;
-        dirLight.shadow.radius = 4;
         this.dirLight = dirLight;
         this.scene.add(dirLight);
 
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
         this.scene.add(ambientLight);
-
-        // ── Ground shadow plane ──
-        const groundGeo = new THREE.PlaneGeometry(80, 80);
-        const groundMat = new THREE.ShadowMaterial({ opacity: 0.15 });
-        const ground = new THREE.Mesh(groundGeo, groundMat);
-        ground.rotation.x = -Math.PI / 2;
-        ground.position.y = 0;
-        ground.receiveShadow = true;
-        this.scene.add(ground);
 
         // ── Systems ──
         this.physics = new PhysicsHandler();
@@ -952,7 +929,9 @@
           this.state.phase = 'over';
           this.audio.playGameOver();
           this.cameraCtrl.shake(0.3);
-          this.ui.showGameOver(this.state.score);
+          setTimeout(() => {
+            this.ui.showGameOver(this.state.score);
+          }, 800);
           return;
         }
 
@@ -991,7 +970,6 @@
         this.physics.clear(this.scene);
         this.state.reset();
         this.tiles.placeBase();
-
         this.cameraCtrl.setTargetY(0);
         this.cameraCtrl.camera.position.set(2, CAMERA_Y_OFFSET, 2);
         this.cameraCtrl.lookTarget.y = 0;
