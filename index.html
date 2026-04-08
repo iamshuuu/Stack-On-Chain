@@ -249,6 +249,47 @@
     const CAMERA_LERP = 0.06;
     const SHAKE_DECAY = 0.88;
     const FALL_CLEANUP_Y = -80;   // far below — pieces fall a long time
+    const GAME_OVER_UI_DELAY_MS = 340;
+    const BASE_CENTER_X = TILE_WIDTH / 2;
+    const BASE_CENTER_Z = TILE_DEPTH / 2;
+    // Landing feel: 'arcade' (bouncier) | 'thud' (heavier)
+    const FALL_STYLE = 'thud';
+    const FALL_PROFILES = {
+      arcade: {
+        bounce: 0.42,
+        groundFriction: 0.9,
+        angularFriction: 0.85,
+        pieceRestitution: 0.16,
+        pieceCollisionFriction: 0.42,
+        solverPasses: 3,
+        linearSleepThreshold: 0.22,
+        angularSleepThreshold: 0.45,
+        settleFramesNeeded: 16,
+        airLinearDamping: 0.75,
+        airAngularDamping: 1.1,
+        flattenRate: 5.2,
+        initialDropMin: 0.35,
+        initialDropMax: 1.1,
+        rotateRandom: 12
+      },
+      thud: {
+        bounce: 0.12,
+        groundFriction: 0.7,
+        angularFriction: 0.62,
+        pieceRestitution: 0.05,
+        pieceCollisionFriction: 0.6,
+        solverPasses: 4,
+        linearSleepThreshold: 0.5,
+        angularSleepThreshold: 0.75,
+        settleFramesNeeded: 6,
+        airLinearDamping: 1.5,
+        airAngularDamping: 2.2,
+        flattenRate: 11.5,
+        initialDropMin: 1.4,
+        initialDropMax: 2.4,
+        rotateRandom: 8
+      }
+    };
 
     // ═══════════════════════════════════════════════════════
     // ██  COLOR PALETTE — soft pastel sine-wave (like ref)
@@ -412,9 +453,14 @@
         this.shakeOffset = new THREE.Vector3();
         this.shakeIntensity = 0;
         // Isometric-style position like reference: (2,2,2) normalized
-        this.camera.position.set(2, 1.32, 2);
+        this.basePosition = new THREE.Vector3(2, 1.32, 2);
+        this.camera.position.copy(this.basePosition);
         this.lookTarget = new THREE.Vector3(0, 0, 0);
         this.currentLookY = 0;
+        this.targetZoom = 1;
+        this.isGameOverZooming = false;
+        this.camera.zoom = 1;
+        this.camera.updateProjectionMatrix();
         this.camera.lookAt(0, 0, 0);
       }
 
@@ -427,10 +473,44 @@
         this.shakeIntensity = intensity;
       }
 
+      triggerGameOverZoom(stackTopY) {
+        // Quick, subtle pullback to fit more of the tower without dramatic camera motion.
+        const halfTowerY = stackTopY * 0.5;
+        this.targetY = halfTowerY + CAMERA_Y_OFFSET;
+        this.currentLookY = halfTowerY;
+        this.targetZoom = THREE.MathUtils.clamp(1 - stackTopY / 150, 0.8, 0.92);
+        this.isGameOverZooming = true;
+      }
+
+      resetView() {
+        this.targetZoom = 1;
+        this.isGameOverZooming = false;
+        this.targetY = CAMERA_Y_OFFSET;
+        this.currentLookY = 0;
+        this.lookTarget.y = 0;
+        this.camera.position.copy(this.basePosition);
+        this.camera.zoom = 1;
+        this.camera.updateProjectionMatrix();
+      }
+
       update() {
-        // Smooth Y follow
+        // Smooth follow
         const desiredY = this.targetY;
-        this.camera.position.y += (desiredY - this.camera.position.y) * CAMERA_LERP;
+        const followLerp = this.isGameOverZooming ? 0.045 : CAMERA_LERP;
+        this.camera.position.y += (desiredY - this.camera.position.y) * followLerp;
+        this.camera.position.x += (this.basePosition.x - this.camera.position.x) * 0.08;
+        this.camera.position.z += (this.basePosition.z - this.camera.position.z) * 0.08;
+        this.lookTarget.y += (this.currentLookY - this.lookTarget.y) * followLerp;
+
+        const zoomLerp = this.isGameOverZooming ? 0.12 : 0.2;
+        const nextZoom = this.camera.zoom + (this.targetZoom - this.camera.zoom) * zoomLerp;
+        if (Math.abs(nextZoom - this.camera.zoom) > 0.0001) {
+          this.camera.zoom = nextZoom;
+          this.camera.updateProjectionMatrix();
+        }
+        if (this.isGameOverZooming && Math.abs(this.targetZoom - this.camera.zoom) < 0.004) {
+          this.isGameOverZooming = false;
+        }
 
         // Camera shake
         if (this.shakeIntensity > 0.001) {
@@ -444,8 +524,6 @@
           this.shakeOffset.set(0, 0, 0);
         }
 
-        this.lookTarget.y += (this.currentLookY - this.lookTarget.y) * CAMERA_LERP;
-
         this.camera.lookAt(
           this.shakeOffset.x,
           this.lookTarget.y + this.shakeOffset.y,
@@ -458,9 +536,271 @@
     // ██  PHYSICS HANDLER — realistic directional falling
     // ═══════════════════════════════════════════════════════
 
+    class SceneArtSystem {
+      constructor(scene) {
+        this.scene = scene;
+        this.time = 0;
+        this.cloudBanks = [];
+        this.cloudTexture = this._createCloudTexture();
+        this.baseMistTexture = this._createMistTexture();
+
+        this.cloudRig = new THREE.Group();
+        this.scene.add(this.cloudRig);
+
+        this.baseRig = new THREE.Group();
+        this.baseRig.position.set(BASE_CENTER_X, 0, BASE_CENTER_Z);
+        this.scene.add(this.baseRig);
+
+        this._buildCloudBanks();
+        this._buildBaseDesign();
+      }
+
+      _createCloudTexture() {
+        const size = 192;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, size, size);
+
+        const puffs = [
+          { x: 0.34, y: 0.56, r: 0.29, a: 0.92 },
+          { x: 0.52, y: 0.48, r: 0.33, a: 0.88 },
+          { x: 0.68, y: 0.56, r: 0.26, a: 0.82 },
+          { x: 0.5, y: 0.67, r: 0.32, a: 0.78 }
+        ];
+        for (let i = 0; i < puffs.length; i++) {
+          const p = puffs[i];
+          const g = ctx.createRadialGradient(
+            size * p.x, size * p.y, size * p.r * 0.16,
+            size * p.x, size * p.y, size * p.r
+          );
+          g.addColorStop(0, `rgba(255, 249, 243, ${p.a})`);
+          g.addColorStop(0.62, `rgba(239, 228, 232, ${p.a * 0.62})`);
+          g.addColorStop(1, 'rgba(230, 220, 228, 0)');
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(size * p.x, size * p.y, size * p.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Subtle random shadow pockets to avoid flat-looking clouds.
+        const shadowCount = 6 + Math.floor(Math.random() * 4);
+        for (let i = 0; i < shadowCount; i++) {
+          const x = size * (0.24 + Math.random() * 0.52);
+          const y = size * (0.36 + Math.random() * 0.4);
+          const r = size * (0.07 + Math.random() * 0.12);
+          const alpha = 0.05 + Math.random() * 0.05;
+          const sg = ctx.createRadialGradient(x, y, r * 0.12, x, y, r);
+          sg.addColorStop(0, `rgba(170, 155, 182, ${alpha})`);
+          sg.addColorStop(0.7, `rgba(178, 165, 188, ${alpha * 0.55})`);
+          sg.addColorStop(1, 'rgba(188, 176, 196, 0)');
+          ctx.fillStyle = sg;
+          ctx.beginPath();
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.needsUpdate = true;
+        return texture;
+      }
+
+      _createMistTexture() {
+        const size = 256;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        const g = ctx.createRadialGradient(
+          size * 0.5, size * 0.5, size * 0.14,
+          size * 0.5, size * 0.5, size * 0.5
+        );
+        g.addColorStop(0, 'rgba(248, 241, 236, 0.95)');
+        g.addColorStop(0.62, 'rgba(238, 231, 234, 0.38)');
+        g.addColorStop(1, 'rgba(240, 236, 239, 0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, size, size);
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.needsUpdate = true;
+        return texture;
+      }
+
+      _createCloudBank(config) {
+        const group = new THREE.Group();
+        group.position.set(config.x, config.followY, config.z);
+        this.cloudRig.add(group);
+
+        for (let i = 0; i < config.count; i++) {
+          const tint = new THREE.Color(config.tint);
+          const darkMix = Math.random() * 0.16;
+          tint.lerp(new THREE.Color(0xd9cfdb), darkMix);
+          const material = new THREE.SpriteMaterial({
+            map: this.cloudTexture,
+            color: tint,
+            transparent: true,
+            opacity: config.opacity * (0.55 + Math.random() * 0.55),
+            depthWrite: false,
+            depthTest: false
+          });
+          const sprite = new THREE.Sprite(material);
+          const size = config.minSize + Math.random() * (config.maxSize - config.minSize);
+          sprite.scale.set(size, size * (0.86 + Math.random() * 0.34), 1);
+          sprite.position.set(
+            (Math.random() - 0.5) * config.spreadX,
+            Math.random() * config.spreadY,
+            (Math.random() - 0.5) * config.spreadZ
+          );
+          sprite.userData.baseOpacity = material.opacity;
+          sprite.userData.phase = Math.random() * Math.PI * 2;
+          group.add(sprite);
+        }
+
+        this.cloudBanks.push({
+          group,
+          x: config.x,
+          z: config.z,
+          followY: config.followY,
+          sway: config.sway,
+          speed: config.speed,
+          phase: Math.random() * Math.PI * 2
+        });
+      }
+
+      _buildCloudBanks() {
+        this._createCloudBank({
+          x: -24, z: 21, followY: -11.5,
+          count: 22, minSize: 8, maxSize: 18,
+          spreadX: 32, spreadY: 12, spreadZ: 18,
+          opacity: 0.5, tint: 0xf2ebe7, sway: 1.1, speed: 0.11
+        });
+        this._createCloudBank({
+          x: 33, z: 14, followY: -10.5,
+          count: 22, minSize: 8, maxSize: 19,
+          spreadX: 32, spreadY: 11, spreadZ: 20,
+          opacity: 0.48, tint: 0xf2ebe6, sway: 0.9, speed: 0.1
+        });
+        this._createCloudBank({
+          x: 4, z: 30, followY: -16.5,
+          count: 24, minSize: 9, maxSize: 20,
+          spreadX: 46, spreadY: 11, spreadZ: 16,
+          opacity: 0.44, tint: 0xefe8e7, sway: 0.65, speed: 0.08
+        });
+      }
+
+      _buildBaseDesign() {
+        const tiers = [
+          { w: 23.5, h: 1.8, d: 23.5, y: -2.65, c: 0x8f7789 },
+          { w: 17.4, h: 1.35, d: 17.4, y: -1.38, c: 0xa08186 },
+          { w: 12.5, h: 0.95, d: 12.5, y: -0.5, c: 0xb4968d }
+        ];
+
+        for (let i = 0; i < tiers.length; i++) {
+          const t = tiers[i];
+          const mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(t.w, t.h, t.d),
+            new THREE.MeshStandardMaterial({
+              color: t.c,
+              roughness: 0.74,
+              metalness: 0.04
+            })
+          );
+          mesh.position.y = t.y;
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          this.baseRig.add(mesh);
+        }
+
+        const cap = new THREE.Mesh(
+          new THREE.BoxGeometry(10.8, 0.36, 10.8),
+          new THREE.MeshStandardMaterial({
+            color: 0xbea79a,
+            roughness: 0.68,
+            metalness: 0.03
+          })
+        );
+        cap.position.y = -0.1;
+        cap.castShadow = true;
+        cap.receiveShadow = true;
+        this.baseRig.add(cap);
+
+        this.baseMist = new THREE.Mesh(
+          new THREE.CircleGeometry(17, 56),
+          new THREE.MeshBasicMaterial({
+            map: this.baseMistTexture,
+            color: 0xf0e8e3,
+            transparent: true,
+            opacity: 0.2,
+            depthWrite: false,
+            side: THREE.DoubleSide
+          })
+        );
+        this.baseMist.rotation.x = -Math.PI / 2;
+        this.baseMist.position.y = 0.03;
+        this.baseRig.add(this.baseMist);
+      }
+
+      update(dt, cameraY) {
+        this.time += dt;
+
+        for (let i = 0; i < this.cloudBanks.length; i++) {
+          const bank = this.cloudBanks[i];
+          bank.group.position.y = cameraY + bank.followY;
+          bank.group.position.x = bank.x + Math.sin(this.time * bank.speed + bank.phase) * bank.sway;
+          bank.group.position.z = bank.z + Math.cos(this.time * bank.speed * 0.86 + bank.phase) * bank.sway * 0.75;
+
+          for (let j = 0; j < bank.group.children.length; j++) {
+            const puff = bank.group.children[j];
+            const pulse = 0.92 + Math.sin(this.time * 0.45 + puff.userData.phase) * 0.08;
+            puff.material.opacity = puff.userData.baseOpacity * pulse;
+          }
+        }
+
+        const mistPulse = 1 + Math.sin(this.time * 0.6) * 0.03;
+        this.baseMist.scale.set(mistPulse, mistPulse, 1);
+      }
+
+      reset() {
+        this.time = 0;
+      }
+    }
+
     class PhysicsHandler {
       constructor() {
         this.fallingPieces = [];
+        this.profile = FALL_PROFILES[FALL_STYLE] || FALL_PROFILES.thud;
+        this.groundY = 0;
+        this.bounce = this.profile.bounce;
+        this.groundFriction = this.profile.groundFriction;
+        this.angularFriction = this.profile.angularFriction;
+        this.pieceRestitution = this.profile.pieceRestitution;
+        this.pieceCollisionFriction = this.profile.pieceCollisionFriction;
+        this.solverPasses = this.profile.solverPasses;
+        this.linearSleepThreshold = this.profile.linearSleepThreshold;
+        this.angularSleepThreshold = this.profile.angularSleepThreshold;
+        this.settleFramesNeeded = this.profile.settleFramesNeeded;
+        this.airLinearDamping = this.profile.airLinearDamping;
+        this.airAngularDamping = this.profile.airAngularDamping;
+        this.flattenRate = this.profile.flattenRate;
+        this.initialDropMin = this.profile.initialDropMin;
+        this.initialDropMax = this.profile.initialDropMax;
+        this.rotateRandomness = this.profile.rotateRandom;
+        this.maxPieceLifeSec = 28;
+        this.cleanupDistance = 180;
+
+        this._axisX = new THREE.Vector3();
+        this._axisY = new THREE.Vector3();
+        this._axisZ = new THREE.Vector3();
+        this._collisionNormal = new THREE.Vector3();
+        this._relativeVel = new THREE.Vector3();
+        this._tangent = new THREE.Vector3();
+        this._impulse = new THREE.Vector3();
+        this._pieceCenter = new THREE.Vector3();
+        this._stackCenter = new THREE.Vector3();
+        this._targetQuat = new THREE.Quaternion();
+        this._targetEuler = new THREE.Euler(0, 0, 0, 'YXZ');
       }
 
       /**
@@ -470,6 +810,14 @@
        * @param {number} direction - positive or negative, which side it was sliced off
        */
       addPiece(mesh, axis = null, direction = 0) {
+        const params = mesh.geometry?.parameters || {};
+        const width = params.width || TILE_WIDTH;
+        const height = params.height || TILE_HEIGHT;
+        const depth = params.depth || TILE_DEPTH;
+
+        // Falling chunks use centered-pivot geometry so tumble + landing feels natural.
+        const centeredMesh = this._toCenteredMesh(mesh, width, height, depth);
+
         // Directional velocity: piece flies off in the direction it was sliced
         const vel = new THREE.Vector3(0, 0, 0);
         if (axis && direction !== 0) {
@@ -480,31 +828,79 @@
           vel.x = (Math.random() - 0.5) * 2;
           vel.z = (Math.random() - 0.5) * 2;
         }
+        vel.y = -(this.initialDropMin + Math.random() * (this.initialDropMax - this.initialDropMin));
 
         // Random heavy rotation like reference (rotateRandomness = 10)
-        const rotateRandom = 10;
+        const rotateRandom = this.rotateRandomness;
         const angularVel = new THREE.Vector3(
-          axis === 'z' ? (Math.random() * rotateRandom - rotateRandom / 2) : 0.1,
+          axis === 'z' ? (Math.random() * rotateRandom - rotateRandom / 2) : (Math.random() - 0.5) * 1.5,
           Math.random() * 0.5,
-          axis === 'x' ? (Math.random() * rotateRandom - rotateRandom / 2) : 0.1
+          axis === 'x' ? (Math.random() * rotateRandom - rotateRandom / 2) : (Math.random() - 0.5) * 1.5
         );
+        const volume = Math.max(width * height * depth, 0.5);
+        const mass = Math.max(0.35, volume * 0.08);
+        const invMass = 1 / mass;
+        const aabb = new THREE.Box3().setFromObject(centeredMesh);
 
-        this.fallingPieces.push({ mesh, velocity: vel, angularVel });
+        this.fallingPieces.push({
+          mesh: centeredMesh,
+          velocity: vel,
+          angularVel,
+          mass,
+          invMass,
+          aabb,
+          halfExtents: new THREE.Vector3(width / 2, height / 2, depth / 2),
+          settleFrames: 0,
+          settled: false,
+          age: 0
+        });
       }
 
-      update(dt) {
-        for (let i = this.fallingPieces.length - 1; i >= 0; i--) {
+      update(dt, stackTiles = []) {
+        for (let i = 0; i < this.fallingPieces.length; i++) {
           const p = this.fallingPieces[i];
-          p.velocity.y -= GRAVITY * dt;
+          p.age += dt;
+
+          // Air damping keeps motion believable and avoids jitter.
+          const linearDrag = Math.exp(-this.airLinearDamping * dt);
+          const angularDrag = Math.exp(-this.airAngularDamping * dt);
+          p.velocity.multiplyScalar(linearDrag);
+          p.angularVel.multiplyScalar(angularDrag);
+
+          if (!p.settled) {
+            p.velocity.y -= GRAVITY * dt;
+          }
+
           p.mesh.position.x += p.velocity.x * dt;
           p.mesh.position.y += p.velocity.y * dt;
           p.mesh.position.z += p.velocity.z * dt;
           p.mesh.rotation.x += p.angularVel.x * dt;
           p.mesh.rotation.y += p.angularVel.y * dt;
           p.mesh.rotation.z += p.angularVel.z * dt;
+          p.aabb.setFromObject(p.mesh);
+        }
 
-          // Only remove when far below camera — let it fall naturally for a long time
-          if (p.mesh.position.y < FALL_CLEANUP_Y) {
+        const passes = Math.max(1, this.solverPasses | 0);
+        for (let pass = 0; pass < passes; pass++) {
+          this._resolvePieceCollisions();
+          this._resolveStackCollisions(stackTiles);
+
+          for (let i = 0; i < this.fallingPieces.length; i++) {
+            const p = this.fallingPieces[i];
+            this._resolveGroundContact(p, dt);
+            p.aabb.setFromObject(p.mesh);
+          }
+        }
+
+        // Keep world bounded and clean up old pieces for performance.
+        for (let i = this.fallingPieces.length - 1; i >= 0; i--) {
+          const p = this.fallingPieces[i];
+          if (
+            p.mesh.position.y < FALL_CLEANUP_Y ||
+            Math.abs(p.mesh.position.x) > this.cleanupDistance ||
+            Math.abs(p.mesh.position.z) > this.cleanupDistance ||
+            p.age > this.maxPieceLifeSec
+          ) {
             p.mesh.geometry.dispose();
             p.mesh.material.dispose();
             p.mesh.parent?.remove(p.mesh);
@@ -520,6 +916,258 @@
           scene.remove(p.mesh);
         }
         this.fallingPieces = [];
+      }
+
+      _toCenteredMesh(mesh, width, height, depth) {
+        const parent = mesh.parent;
+        const centeredGeo = new THREE.BoxGeometry(width, height, depth);
+        const centeredMat = mesh.material.clone();
+        const centeredMesh = new THREE.Mesh(centeredGeo, centeredMat);
+
+        centeredMesh.castShadow = true;
+        centeredMesh.receiveShadow = true;
+        centeredMesh.position.set(
+          mesh.position.x + width / 2,
+          mesh.position.y + height / 2,
+          mesh.position.z + depth / 2
+        );
+        centeredMesh.rotation.copy(mesh.rotation);
+
+        if (parent) {
+          parent.add(centeredMesh);
+          parent.remove(mesh);
+        }
+        mesh.geometry.dispose();
+        mesh.material.dispose();
+        return centeredMesh;
+      }
+
+      _supportHeight(piece) {
+        const q = piece.mesh.quaternion;
+        this._axisX.set(1, 0, 0).applyQuaternion(q);
+        this._axisY.set(0, 1, 0).applyQuaternion(q);
+        this._axisZ.set(0, 0, 1).applyQuaternion(q);
+        return (
+          Math.abs(this._axisX.y) * piece.halfExtents.x +
+          Math.abs(this._axisY.y) * piece.halfExtents.y +
+          Math.abs(this._axisZ.y) * piece.halfExtents.z
+        );
+      }
+
+      _resolvePieceCollisions() {
+        const n = this.fallingPieces.length;
+        if (n < 2) return;
+
+        for (let i = 0; i < n - 1; i++) {
+          const a = this.fallingPieces[i];
+          const boxA = a.aabb;
+
+          for (let j = i + 1; j < n; j++) {
+            const b = this.fallingPieces[j];
+            const boxB = b.aabb;
+            if (!boxA.intersectsBox(boxB)) continue;
+
+            const overlapX = Math.min(boxA.max.x, boxB.max.x) - Math.max(boxA.min.x, boxB.min.x);
+            const overlapY = Math.min(boxA.max.y, boxB.max.y) - Math.max(boxA.min.y, boxB.min.y);
+            const overlapZ = Math.min(boxA.max.z, boxB.max.z) - Math.max(boxA.min.z, boxB.min.z);
+            if (overlapX <= 0 || overlapY <= 0 || overlapZ <= 0) continue;
+
+            let penetration = overlapX;
+            this._collisionNormal.set(a.mesh.position.x < b.mesh.position.x ? 1 : -1, 0, 0);
+            if (overlapY < penetration) {
+              penetration = overlapY;
+              this._collisionNormal.set(0, a.mesh.position.y < b.mesh.position.y ? 1 : -1, 0);
+            }
+            if (overlapZ < penetration) {
+              penetration = overlapZ;
+              this._collisionNormal.set(0, 0, a.mesh.position.z < b.mesh.position.z ? 1 : -1);
+            }
+
+            const invMassA = a.settled ? 0 : a.invMass;
+            const invMassB = b.settled ? 0 : b.invMass;
+            const invMassSum = invMassA + invMassB;
+            if (invMassSum <= 1e-6) continue;
+
+            // Positional correction resolves overlaps and prevents ghosting.
+            const correction = penetration + 0.001;
+            if (invMassA > 0) {
+              a.mesh.position.addScaledVector(this._collisionNormal, -correction * (invMassA / invMassSum));
+            }
+            if (invMassB > 0) {
+              b.mesh.position.addScaledVector(this._collisionNormal, correction * (invMassB / invMassSum));
+            }
+
+            this._relativeVel.subVectors(b.velocity, a.velocity);
+            const velAlongNormal = this._relativeVel.dot(this._collisionNormal);
+            if (velAlongNormal >= 0) {
+              boxA.setFromObject(a.mesh);
+              boxB.setFromObject(b.mesh);
+              continue;
+            }
+
+            const jn = (-(1 + this.pieceRestitution) * velAlongNormal) / invMassSum;
+            this._impulse.copy(this._collisionNormal).multiplyScalar(jn);
+            if (invMassA > 0) a.velocity.addScaledVector(this._impulse, -invMassA);
+            if (invMassB > 0) b.velocity.addScaledVector(this._impulse, invMassB);
+
+            // Coulomb-style friction to reduce sliding through each other.
+            this._tangent.copy(this._relativeVel).addScaledVector(this._collisionNormal, -velAlongNormal);
+            const tangentLenSq = this._tangent.lengthSq();
+            if (tangentLenSq > 1e-8) {
+              this._tangent.multiplyScalar(1 / Math.sqrt(tangentLenSq));
+              let jt = -this._relativeVel.dot(this._tangent) / invMassSum;
+              const maxFriction = jn * this.pieceCollisionFriction;
+              if (jt > maxFriction) jt = maxFriction;
+              if (jt < -maxFriction) jt = -maxFriction;
+              this._impulse.copy(this._tangent).multiplyScalar(jt);
+              if (invMassA > 0) a.velocity.addScaledVector(this._impulse, -invMassA);
+              if (invMassB > 0) b.velocity.addScaledVector(this._impulse, invMassB);
+            }
+
+            // Wake sleeping pieces when hit so they react naturally.
+            if (Math.abs(velAlongNormal) > 0.45) {
+              if (a.settled) {
+                a.settled = false;
+                a.settleFrames = 0;
+              }
+              if (b.settled) {
+                b.settled = false;
+                b.settleFrames = 0;
+              }
+            }
+
+            boxA.setFromObject(a.mesh);
+            boxB.setFromObject(b.mesh);
+          }
+        }
+      }
+
+      _resolveStackCollisions(stackTiles) {
+        if (!stackTiles || stackTiles.length === 0 || this.fallingPieces.length === 0) return;
+
+        for (let i = 0; i < this.fallingPieces.length; i++) {
+          const piece = this.fallingPieces[i];
+          const boxP = piece.aabb;
+
+          for (let t = 0; t < stackTiles.length; t++) {
+            const tile = stackTiles[t];
+            const minX = tile.x;
+            const maxX = tile.x + tile.width;
+            const minY = tile.mesh.position.y;
+            const maxY = minY + TILE_HEIGHT;
+            const minZ = tile.z;
+            const maxZ = tile.z + tile.depth;
+
+            if (
+              boxP.max.x <= minX || boxP.min.x >= maxX ||
+              boxP.max.y <= minY || boxP.min.y >= maxY ||
+              boxP.max.z <= minZ || boxP.min.z >= maxZ
+            ) {
+              continue;
+            }
+
+            const overlapX = Math.min(boxP.max.x, maxX) - Math.max(boxP.min.x, minX);
+            const overlapY = Math.min(boxP.max.y, maxY) - Math.max(boxP.min.y, minY);
+            const overlapZ = Math.min(boxP.max.z, maxZ) - Math.max(boxP.min.z, minZ);
+            if (overlapX <= 0 || overlapY <= 0 || overlapZ <= 0) continue;
+
+            this._pieceCenter.set(
+              (boxP.min.x + boxP.max.x) * 0.5,
+              (boxP.min.y + boxP.max.y) * 0.5,
+              (boxP.min.z + boxP.max.z) * 0.5
+            );
+            this._stackCenter.set(
+              (minX + maxX) * 0.5,
+              (minY + maxY) * 0.5,
+              (minZ + maxZ) * 0.5
+            );
+
+            let penetration = overlapX;
+            this._collisionNormal.set(this._pieceCenter.x >= this._stackCenter.x ? 1 : -1, 0, 0);
+            if (overlapY < penetration) {
+              penetration = overlapY;
+              this._collisionNormal.set(0, this._pieceCenter.y >= this._stackCenter.y ? 1 : -1, 0);
+            }
+            if (overlapZ < penetration) {
+              penetration = overlapZ;
+              this._collisionNormal.set(0, 0, this._pieceCenter.z >= this._stackCenter.z ? 1 : -1);
+            }
+
+            piece.mesh.position.addScaledVector(this._collisionNormal, penetration + 0.001);
+            boxP.setFromObject(piece.mesh);
+
+            const velAlongNormal = piece.velocity.dot(this._collisionNormal);
+            if (velAlongNormal < 0) {
+              piece.velocity.addScaledVector(this._collisionNormal, -(1 + this.pieceRestitution) * velAlongNormal);
+            }
+
+            this._tangent.copy(piece.velocity).addScaledVector(this._collisionNormal, -piece.velocity.dot(this._collisionNormal));
+            const tangentLenSq = this._tangent.lengthSq();
+            if (tangentLenSq > 1e-8) {
+              this._tangent.multiplyScalar(1 / Math.sqrt(tangentLenSq));
+              const tangentSpeed = piece.velocity.dot(this._tangent);
+              const frictionLimit = Math.max(0.02, Math.abs(velAlongNormal) * this.pieceCollisionFriction);
+              const frictionImpulse = Math.sign(tangentSpeed) * Math.min(Math.abs(tangentSpeed), frictionLimit);
+              piece.velocity.addScaledVector(this._tangent, -frictionImpulse);
+            }
+
+            piece.angularVel.multiplyScalar(0.9);
+            if (piece.settled) {
+              piece.settled = false;
+              piece.settleFrames = 0;
+            }
+          }
+        }
+      }
+
+      _resolveGroundContact(piece, dt) {
+        const support = this._supportHeight(piece);
+        const bottom = piece.mesh.position.y - support;
+        const penetration = this.groundY - bottom;
+
+        if (penetration <= 0) {
+          piece.settleFrames = 0;
+          return;
+        }
+
+        piece.mesh.position.y += penetration;
+
+        if (piece.velocity.y < 0) {
+          piece.velocity.y = -piece.velocity.y * this.bounce;
+        }
+        piece.velocity.x *= this.groundFriction;
+        piece.velocity.z *= this.groundFriction;
+        piece.angularVel.x *= this.angularFriction;
+        piece.angularVel.z *= this.angularFriction;
+
+        // While touching ground, ease toward a flat resting orientation.
+        const snappedYaw = Math.round(piece.mesh.rotation.y / (Math.PI / 2)) * (Math.PI / 2);
+        this._targetEuler.set(0, snappedYaw, 0, 'YXZ');
+        this._targetQuat.setFromEuler(this._targetEuler);
+        const settleLerp = 1 - Math.exp(-this.flattenRate * dt);
+        piece.mesh.quaternion.slerp(this._targetQuat, settleLerp);
+
+        // Re-clamp after orientation shift to avoid tiny sinking artifacts.
+        const reclampedBottom = piece.mesh.position.y - this._supportHeight(piece);
+        if (reclampedBottom < this.groundY) {
+          piece.mesh.position.y += this.groundY - reclampedBottom;
+        }
+
+        const linearSpeed = piece.velocity.length();
+        const angularSpeed = piece.angularVel.length();
+        if (linearSpeed < this.linearSleepThreshold && angularSpeed < this.angularSleepThreshold) {
+          piece.settleFrames += 1;
+          if (piece.settleFrames >= this.settleFramesNeeded) {
+            piece.settled = true;
+            piece.velocity.set(0, 0, 0);
+            piece.angularVel.set(0, 0, 0);
+            piece.mesh.rotation.x = 0;
+            piece.mesh.rotation.z = 0;
+          }
+        } else {
+          piece.settleFrames = 0;
+          piece.settled = false;
+        }
       }
     }
 
@@ -825,6 +1473,7 @@
         this.state = new GameState();
         this.audio = new AudioSystem();
         this.ui = new UIController();
+        this.gameOverTimeout = null;
 
         // ── Renderer ──
         this.renderer = new THREE.WebGLRenderer({
@@ -840,6 +1489,13 @@
 
         // ── Scene ──
         this.scene = new THREE.Scene();
+        const groundGeo = new THREE.CircleGeometry(140, 64);
+        const groundMat = new THREE.ShadowMaterial({ opacity: 0.12 });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = 0;
+        ground.receiveShadow = true;
+        this.scene.add(ground);
 
         // ── Camera (Orthographic like reference) ──
         const viewSize = 30;
@@ -867,6 +1523,7 @@
         // ── Systems ──
         this.physics = new PhysicsHandler();
         this.tiles = new TileSystem(this.scene, this.physics);
+        this.sceneArt = new SceneArtSystem(this.scene);
 
         // ── Initial setup ──
         this.tiles.placeBase();
@@ -929,9 +1586,12 @@
           this.state.phase = 'over';
           this.audio.playGameOver();
           this.cameraCtrl.shake(0.3);
-          setTimeout(() => {
+          this.cameraCtrl.triggerGameOverZoom(this.tiles.getStackTopY());
+          if (this.gameOverTimeout) clearTimeout(this.gameOverTimeout);
+          this.gameOverTimeout = setTimeout(() => {
             this.ui.showGameOver(this.state.score);
-          }, 800);
+            this.gameOverTimeout = null;
+          }, GAME_OVER_UI_DELAY_MS);
           return;
         }
 
@@ -966,13 +1626,17 @@
       }
 
       _restart() {
+        if (this.gameOverTimeout) {
+          clearTimeout(this.gameOverTimeout);
+          this.gameOverTimeout = null;
+        }
         this.tiles.clear();
         this.physics.clear(this.scene);
+        this.sceneArt.reset();
         this.state.reset();
         this.tiles.placeBase();
         this.cameraCtrl.setTargetY(0);
-        this.cameraCtrl.camera.position.set(2, CAMERA_Y_OFFSET, 2);
-        this.cameraCtrl.lookTarget.y = 0;
+        this.cameraCtrl.resetView();
         this.ui.reset();
         this.ui.updateScore(0, this.state.highScore);
         ColorPalette.offset = Math.round(Math.random() * 100);
@@ -999,10 +1663,13 @@
         }
 
         // Update physics
-        this.physics.update(dt);
+        this.physics.update(dt, this.tiles.stack);
 
         // Update camera
         this.cameraCtrl.update();
+
+        // Update scene art
+        this.sceneArt.update(dt, this.camera.position.y);
 
         // Render
         this.renderer.render(this.scene, this.camera);
